@@ -6,11 +6,35 @@ import re
 
 st.set_page_config(layout="wide")
 
-# ================= HEADER =================
+# ================= STYLE =================
 st.markdown("""
-# 📊 NDO TA & MDT DASHBOARD
-### TA 4G CELL
-""")
+<style>
+.block-container {
+    padding-top: 1rem;
+}
+
+.card {
+    background-color: #ffffff;
+    padding: 10px;
+    border-radius: 10px;
+    box-shadow: 0px 2px 6px rgba(0,0,0,0.1);
+    margin-bottom: 15px;
+}
+
+.no-data {
+    background-color: #f5f5dc;
+    padding: 20px;
+    border-radius: 10px;
+    text-align: center;
+    color: #666;
+    font-weight: 500;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ================= HEADER =================
+st.markdown("# 📊 NDO TA & MDT DASHBOARD")
+st.markdown("### TA 4G CELL")
 
 # ================= LOAD =================
 @st.cache_data
@@ -29,29 +53,25 @@ def load_data():
 ta_df, mcom_df = load_data()
 
 # ================= FILTER =================
-col1, col2, col3 = st.columns(3)
+c1, c2, c3 = st.columns(3)
 
-with col1:
-    site_list = sorted(mcom_df["site_id"].dropna().unique())
-    selected_site = st.selectbox("Select SITE", site_list)
+with c1:
+    site = st.selectbox("Select SITE", sorted(mcom_df["site_id"].unique()))
 
-with col2:
-    band_list = ["All"] + sorted(mcom_df["band"].dropna().astype(int).unique().tolist())
-    selected_band = st.selectbox("Select BAND", band_list)
+with c2:
+    band = st.selectbox("Select BAND", ["All"] + sorted(mcom_df["band"].unique()))
 
-with col3:
+with c3:
     baseline = st.slider("Baseline (%)", 80, 100, 90)
 
 # ================= JOIN =================
-site_mcom = mcom_df[mcom_df["site_id"] == selected_site]
+site_df = mcom_df[mcom_df["site_id"] == site]
 
-if selected_band != "All":
-    site_mcom = site_mcom[site_mcom["band"] == selected_band]
+if band != "All":
+    site_df = site_df[site_df["band"] == band]
 
-ci_list = site_mcom["ci"].unique()
-
-df = ta_df[ta_df["ci"].isin(ci_list)]
-df = df.merge(site_mcom, on="ci", how="left")
+df = ta_df[ta_df["ci"].isin(site_df["ci"])]
+df = df.merge(site_df, on="ci", how="left")
 
 # ================= SECTOR =================
 def get_sector(ci):
@@ -64,26 +84,24 @@ df["sector"] = df["ci"].apply(get_sector)
 
 # ================= HIST =================
 def build_hist(row):
+    cols = [c for c in row.index if "_ta_distance_km" in c]
 
-    perc_cols = [c for c in row.index if "_ta_distance_km" in c]
-
-    def get_num(x):
+    def num(x):
         return int(re.findall(r'\d+', x)[0])
 
-    perc_cols = sorted(perc_cols, key=get_num)
+    cols = sorted(cols, key=num)
 
-    x = [get_num(c) for c in perc_cols]
-    y = pd.to_numeric(row[perc_cols], errors="coerce").values
-
+    x = [num(c) for c in cols]
+    y = pd.to_numeric(row[cols], errors="coerce").values
     hist = np.diff(np.insert(y, 0, 0))
 
     return x, hist, y
 
-# ================= PLOT =================
+# ================= CHART =================
 def plot_chart(df_sec, title):
 
     if df_sec.empty:
-        st.warning("No Data")
+        st.markdown('<div class="no-data">No Data</div>', unsafe_allow_html=True)
         return
 
     row = df_sec.iloc[0]
@@ -91,34 +109,20 @@ def plot_chart(df_sec, title):
 
     fig = go.Figure()
 
-    # BAR
-    fig.add_bar(
-        x=x,
-        y=hist,
-        name="Sample",
-        marker_color="#4C78A8"
-    )
+    fig.add_bar(x=x, y=hist, name="Sample", marker_color="#4C78A8")
 
-    # LINE
     fig.add_scatter(
-        x=x,
-        y=cum,
+        x=x, y=cum,
         mode="lines+markers",
         name="% Cumulative",
         yaxis="y2",
         line=dict(color="green")
     )
 
-    # BASELINE
     threshold = baseline / 100 * max(cum)
 
-    fig.add_hline(
-        y=threshold,
-        line_dash="dash",
-        line_color="red"
-    )
+    fig.add_hline(y=threshold, line_dash="dash", line_color="red")
 
-    # MARKER X
     idx = np.argmax(cum >= threshold)
 
     fig.add_scatter(
@@ -130,17 +134,13 @@ def plot_chart(df_sec, title):
     )
 
     fig.update_layout(
-        title=title,
-        height=280,
-        margin=dict(l=10, r=10, t=30, b=10),
+        title=dict(text=title, font=dict(size=12)),
+        height=260,
+        margin=dict(l=5, r=5, t=30, b=5),
         xaxis_title="Range (Km)",
         yaxis_title="Sample",
-        yaxis2=dict(
-            overlaying="y",
-            side="right",
-            title="% Cumulative"
-        ),
-        legend=dict(orientation="h")
+        yaxis2=dict(overlaying="y", side="right"),
+        legend=dict(orientation="h", y=-0.3)
     )
 
     st.plotly_chart(fig, use_container_width=True)
@@ -148,26 +148,26 @@ def plot_chart(df_sec, title):
 # ================= DASHBOARD =================
 bands = sorted(df["band"].dropna().unique())
 
-for band in bands:
+for b in bands:
 
-    st.markdown(f"## 📶 Band: L{int(band)}")
+    st.markdown(f"## 📶 Band: L{int(b)}")
 
-    cols = st.columns(3)
+    col1, col2, col3 = st.columns(3)
 
     sectors = ["SEC1", "SEC2", "SEC3"]
 
     for i, sec in enumerate(sectors):
 
-        with cols[i]:
+        with [col1, col2, col3][i]:
 
-            df_sec = df[
-                (df["band"] == band) &
-                (df["sector"] == sec)
-            ]
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+
+            df_sec = df[(df["band"] == b) & (df["sector"] == sec)]
 
             title = sec
-
             if not df_sec.empty:
                 title = df_sec.iloc[0]["cell_name"]
 
             plot_chart(df_sec, title)
+
+            st.markdown('</div>', unsafe_allow_html=True)
