@@ -6,17 +6,23 @@ import re
 st.set_page_config(layout="wide")
 st.title("📊 TA Dashboard (Site Based)")
 
-# ================= LOAD DATA =================
+# ================= LOAD =================
 @st.cache_data
 def load_data():
     ta = pd.read_csv("ta_stat_20260409.csv")
     mcom = pd.read_csv("mcom.csv")
 
-    # normalize column
-    ta.columns = ta.columns.str.lower()
+    # 🔥 CLEAN COLUMN NAME
+    ta.columns = (
+        ta.columns
+        .str.lower()
+        .str.replace("(", "", regex=False)
+        .str.replace(")", "", regex=False)
+        .str.replace(" ", "", regex=False)
+    )
+
     mcom.columns = mcom.columns.str.lower()
 
-    # ensure ci string
     ta["ci"] = ta["ci"].astype(str)
     mcom["ci"] = mcom["ci"].astype(str)
 
@@ -25,28 +31,28 @@ def load_data():
 try:
     ta_df, mcom = load_data()
 except Exception as e:
-    st.error("❌ Gagal load data")
+    st.error("Load error")
     st.text(str(e))
     st.stop()
 
 # ================= VALIDATION =================
-if ta_df.empty:
-    st.error("❌ TA data kosong")
-    st.stop()
-
-if mcom.empty:
-    st.error("❌ MCOM data kosong")
+if ta_df.empty or mcom.empty:
+    st.error("Data kosong")
     st.stop()
 
 # ================= DETECT PERCENTILE =================
-perc_cols = [c for c in ta_df.columns if "perc" in c and "ta" in c]
+perc_cols = [c for c in ta_df.columns if c.startswith("perc")]
 
 if len(perc_cols) == 0:
-    st.error("❌ Kolom percentile TA tidak ditemukan")
+    st.error("Kolom perc tidak ditemukan")
+    st.write(ta_df.columns)
     st.stop()
 
 def get_perc(x):
-    return int(re.findall(r'\d+', x)[0])
+    try:
+        return int(re.findall(r'\d+', x)[0])
+    except:
+        return 0
 
 perc_cols = sorted(perc_cols, key=get_perc)
 x_vals = [get_perc(c) for c in perc_cols]
@@ -63,18 +69,13 @@ def ci_to_sector(ci):
 
 # ================= SITE =================
 if "site" not in mcom.columns:
-    st.error("❌ Kolom 'site' tidak ada di MCOM")
+    st.error("Kolom site tidak ada")
     st.stop()
 
 sites = sorted(mcom["site"].dropna().unique())
-
-if len(sites) == 0:
-    st.error("❌ Tidak ada site di MCOM")
-    st.stop()
-
 selected_site = st.selectbox("Select Site", sites)
 
-st.markdown(f"### 📡 Site: {selected_site}")
+st.write("Selected:", selected_site)
 
 # ================= FILTER =================
 ci_list = mcom[mcom["site"] == selected_site]["ci"].unique()
@@ -82,20 +83,25 @@ ci_list = mcom[mcom["site"] == selected_site]["ci"].unique()
 df = ta_df[ta_df["ci"].isin(ci_list)]
 
 if df.empty:
-    st.warning("⚠️ Tidak ada data TA untuk site ini")
+    st.warning("No TA data")
     st.stop()
 
 # ================= MERGE =================
 df = df.merge(mcom, on="ci", how="left")
 
-# ================= FIX BAND =================
-if "band_y" in df.columns:
-    df["band_clean"] = df["band_y"].astype(str)
-elif "band" in df.columns:
-    df["band_clean"] = df["band"].astype(str)
-else:
-    st.error("❌ Kolom band tidak ditemukan")
+# ================= BAND FIX =================
+band_col = None
+for c in ["band_y", "band", "lte_band"]:
+    if c in df.columns:
+        band_col = c
+        break
+
+if band_col is None:
+    st.error("Band column not found")
+    st.write(df.columns)
     st.stop()
+
+df["band_clean"] = df[band_col].astype(str)
 
 # ================= SECTOR =================
 df["sector"] = df["ci"].apply(ci_to_sector)
@@ -108,7 +114,6 @@ def plot_curve(df_sec, title):
         return
 
     row = df_sec.iloc[0]
-
     y = row[perc_cols].values
 
     fig = go.Figure()
@@ -116,26 +121,13 @@ def plot_curve(df_sec, title):
     fig.add_scatter(
         x=x_vals,
         y=y,
-        mode="lines+markers",
-        name="TA Curve"
+        mode="lines+markers"
     )
-
-    # TA90 marker
-    if "perc90_ta" in df_sec.columns:
-        ta90 = row.get("perc90_ta", None)
-        if pd.notna(ta90):
-            fig.add_scatter(
-                x=[90],
-                y=[ta90],
-                mode="markers",
-                marker=dict(color="red", size=10),
-                name="TA 90%"
-            )
 
     fig.update_layout(
         title=title,
-        xaxis_title="Percentile (%)",
-        yaxis_title="TA Distance (Km)",
+        xaxis_title="Percentile",
+        yaxis_title="TA (Km)",
         height=300
     )
 
@@ -147,16 +139,14 @@ sectors = ["SEC1","SEC2","SEC3"]
 
 for band in bands:
 
-    st.markdown(f"## 📡 Band: L{band}")
+    st.markdown(f"## Band L{band}")
 
     cols = st.columns(3)
 
     for i, sec in enumerate(sectors):
         with cols[i]:
-
             df_sec = df[
                 (df["band_clean"] == band) &
                 (df["sector"] == sec)
             ]
-
             plot_curve(df_sec, sec)
