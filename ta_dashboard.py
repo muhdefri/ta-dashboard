@@ -7,11 +7,11 @@ import re
 st.set_page_config(layout="wide")
 st.title("📊 TA Dashboard (Site Based)")
 
-# ================= DEBUG FILE =================
+# ================= DEBUG =================
 st.subheader("🔍 Debug Files")
 st.write("Files:", os.listdir())
 
-# ================= LOAD DATA =================
+# ================= LOAD =================
 @st.cache_data
 def load_data():
     try:
@@ -39,22 +39,18 @@ def load_data():
 ta_df, mcom_df = load_data()
 
 # ================= VALIDATION =================
-required_ta = ["ci"]
-required_mcom = ["site_id", "ci", "band"]
+if "ci" not in ta_df.columns:
+    st.error("❌ Missing CI in TA")
+    st.stop()
 
-for col in required_ta:
-    if col not in ta_df.columns:
-        st.error(f"❌ Missing TA column: {col}")
-        st.stop()
-
-for col in required_mcom:
+for col in ["site_id", "ci", "band"]:
     if col not in mcom_df.columns:
-        st.error(f"❌ Missing MCOM column: {col}")
+        st.error(f"❌ Missing {col} in MCOM")
         st.stop()
 
 st.success("✅ Column OK")
 
-# ================= DETECT TA PERCENTILE =================
+# ================= DETECT TA =================
 perc_cols = [c for c in ta_df.columns if "_ta_distance_km" in c]
 
 if len(perc_cols) == 0:
@@ -79,7 +75,6 @@ if site_mcom.empty:
     st.stop()
 
 ci_list = site_mcom["ci"].unique()
-
 df = ta_df[ta_df["ci"].isin(ci_list)]
 
 if df.empty:
@@ -88,7 +83,6 @@ if df.empty:
 
 # ================= MERGE =================
 df = df.merge(site_mcom, on="ci", how="left")
-
 st.success("✅ Data Ready")
 
 # ================= SECTOR =================
@@ -101,7 +95,7 @@ def ci_to_sector(ci):
 
 df["sector"] = df["ci"].apply(ci_to_sector)
 
-# ================= PLOT FUNCTION =================
+# ================= PLOT =================
 def plot_curve(df_sec, title):
 
     if df_sec.empty:
@@ -110,14 +104,18 @@ def plot_curve(df_sec, title):
 
     row = df_sec.iloc[0]
 
-    y = pd.to_numeric(row[perc_cols], errors="coerce")
+    # convert to numpy biar aman
+    y = pd.to_numeric(row[perc_cols], errors="coerce").values
 
-    # drop nan
-    valid = ~y.isna()
-    x = [x_vals[i] for i in range(len(x_vals)) if valid[i]]
-    y = y[valid]
+    x = []
+    y_clean = []
 
-    if len(y) == 0:
+    for i in range(len(y)):
+        if pd.notna(y[i]):
+            x.append(x_vals[i])
+            y_clean.append(y[i])
+
+    if len(y_clean) == 0:
         st.warning("No valid data")
         return
 
@@ -125,7 +123,7 @@ def plot_curve(df_sec, title):
 
     fig.add_scatter(
         x=x,
-        y=y,
+        y=y_clean,
         mode="lines+markers",
         name="TA Curve"
     )
@@ -139,7 +137,7 @@ def plot_curve(df_sec, title):
 
     st.plotly_chart(fig, use_container_width=True)
 
-# ================= LOOP BAND =================
+# ================= LOOP =================
 bands = sorted(df["band"].dropna().unique())
 sectors = ["SEC1", "SEC2", "SEC3"]
 
