@@ -6,28 +6,39 @@ import re
 st.set_page_config(layout="wide")
 st.title("📊 TA Dashboard (Site Based)")
 
-# ================= LOAD =================
+# ================= LOAD DATA =================
 @st.cache_data
 def load_data():
     ta = pd.read_csv("ta_stat_20260409.csv")
     mcom = pd.read_csv("mcom.csv")
 
+    # normalize column
     ta.columns = ta.columns.str.lower()
     mcom.columns = mcom.columns.str.lower()
 
+    # ensure ci string
     ta["ci"] = ta["ci"].astype(str)
     mcom["ci"] = mcom["ci"].astype(str)
 
     return ta, mcom
 
-ta_df, mcom = load_data()
-
-# ================= CHECK =================
-if ta_df.empty or mcom.empty:
-    st.error("❌ Data kosong")
+try:
+    ta_df, mcom = load_data()
+except Exception as e:
+    st.error("❌ Gagal load data")
+    st.text(str(e))
     st.stop()
 
-# ================= PERCENTILE =================
+# ================= VALIDATION =================
+if ta_df.empty:
+    st.error("❌ TA data kosong")
+    st.stop()
+
+if mcom.empty:
+    st.error("❌ MCOM data kosong")
+    st.stop()
+
+# ================= DETECT PERCENTILE =================
 perc_cols = [c for c in ta_df.columns if "perc" in c and "ta" in c]
 
 if len(perc_cols) == 0:
@@ -51,10 +62,14 @@ def ci_to_sector(ci):
     return "UNK"
 
 # ================= SITE =================
+if "site" not in mcom.columns:
+    st.error("❌ Kolom 'site' tidak ada di MCOM")
+    st.stop()
+
 sites = sorted(mcom["site"].dropna().unique())
 
 if len(sites) == 0:
-    st.error("❌ Site tidak ditemukan di MCOM")
+    st.error("❌ Tidak ada site di MCOM")
     st.stop()
 
 selected_site = st.selectbox("Select Site", sites)
@@ -70,11 +85,17 @@ if df.empty:
     st.warning("⚠️ Tidak ada data TA untuk site ini")
     st.stop()
 
-# ================= JOIN =================
+# ================= MERGE =================
 df = df.merge(mcom, on="ci", how="left")
 
-# ================= BAND =================
-df["band"] = df["band"].astype(str)
+# ================= FIX BAND =================
+if "band_y" in df.columns:
+    df["band_clean"] = df["band_y"].astype(str)
+elif "band" in df.columns:
+    df["band_clean"] = df["band"].astype(str)
+else:
+    st.error("❌ Kolom band tidak ditemukan")
+    st.stop()
 
 # ================= SECTOR =================
 df["sector"] = df["ci"].apply(ci_to_sector)
@@ -121,7 +142,7 @@ def plot_curve(df_sec, title):
     st.plotly_chart(fig, use_container_width=True)
 
 # ================= LOOP =================
-bands = sorted(df["band"].dropna().unique())
+bands = sorted(df["band_clean"].dropna().unique())
 sectors = ["SEC1","SEC2","SEC3"]
 
 for band in bands:
@@ -134,7 +155,7 @@ for band in bands:
         with cols[i]:
 
             df_sec = df[
-                (df["band"] == band) &
+                (df["band_clean"] == band) &
                 (df["sector"] == sec)
             ]
 
