@@ -1,173 +1,154 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import numpy as np
 import re
 
 st.set_page_config(layout="wide")
-
-# ================= STYLE =================
-st.markdown("""
-<style>
-.block-container {
-    padding-top: 1rem;
-}
-
-.card {
-    background-color: #ffffff;
-    padding: 10px;
-    border-radius: 10px;
-    box-shadow: 0px 2px 6px rgba(0,0,0,0.1);
-    margin-bottom: 15px;
-}
-
-.no-data {
-    background-color: #f5f5dc;
-    padding: 20px;
-    border-radius: 10px;
-    text-align: center;
-    color: #666;
-    font-weight: 500;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# ================= HEADER =================
-st.markdown("# 📊 NDO TA & MDT DASHBOARD")
-st.markdown("### TA 4G CELL")
+st.title("📊 NDO TA Dashboard (Real Histogram)")
 
 # ================= LOAD =================
 @st.cache_data
 def load_data():
-    ta = pd.read_csv("ta_stat_20260409.csv")
-    mcom = pd.read_csv("mcom.csv")
+    try:
+        df = pd.read_csv("TA_Chart_pmCounter - Copy.csv")
+    except Exception as e:
+        st.error(f"❌ Load CSV error: {e}")
+        st.stop()
 
-    ta.columns = ta.columns.str.lower()
-    mcom.columns = mcom.columns.str.lower()
+    df.columns = df.columns.str.strip().str.lower()
+    return df
 
-    ta["ci"] = ta["ci"].astype(str)
-    mcom["ci"] = mcom["ci"].astype(str)
+df = load_data()
 
-    return ta, mcom
+# ================= VALIDATE =================
+required_cols = ["eutrancellfdd", "distance", "pmtainit2distr"]
+for c in required_cols:
+    if c not in df.columns:
+        st.error(f"❌ Missing column: {c}")
+        st.stop()
 
-ta_df, mcom_df = load_data()
+# ================= PARSE DISTANCE =================
+def parse_distance(x):
+    nums = re.findall(r"[\d.]+", str(x))
+    return float(nums[-1]) if nums else None
 
-# ================= FILTER =================
-c1, c2, c3 = st.columns(3)
-
-with c1:
-    site = st.selectbox("Select SITE", sorted(mcom_df["site_id"].unique()))
-
-with c2:
-    band = st.selectbox("Select BAND", ["All"] + sorted(mcom_df["band"].unique()))
-
-with c3:
-    baseline = st.slider("Baseline (%)", 80, 100, 90)
-
-# ================= JOIN =================
-site_df = mcom_df[mcom_df["site_id"] == site]
-
-if band != "All":
-    site_df = site_df[site_df["band"] == band]
-
-df = ta_df[ta_df["ci"].isin(site_df["ci"])]
-df = df.merge(site_df, on="ci", how="left")
+df["distance_km"] = df["distance"].apply(parse_distance)
 
 # ================= SECTOR =================
-def get_sector(ci):
-    if ci.endswith("1"): return "SEC1"
-    if ci.endswith("2"): return "SEC2"
-    if ci.endswith("3"): return "SEC3"
+def get_sector(cell):
+    cell = str(cell)
+    if cell.endswith("1"): return "SEC1"
+    if cell.endswith("2"): return "SEC2"
+    if cell.endswith("3"): return "SEC3"
     return "UNK"
 
-df["sector"] = df["ci"].apply(get_sector)
+df["sector"] = df["eutrancellfdd"].apply(get_sector)
 
-# ================= HIST =================
-def build_hist(row):
-    cols = [c for c in row.index if "_ta_distance_km" in c]
+# ================= BAND (AUTO DETECT) =================
+# contoh: L1800, L2100, dll (sesuaikan kalau beda)
+if "band" not in df.columns:
+    # fallback: ambil dari nama cell (optional)
+    df["band"] = "Unknown"
 
-    def num(x):
-        return int(re.findall(r'\d+', x)[0])
+# ================= FILTER =================
+col1, col2 = st.columns(2)
 
-    cols = sorted(cols, key=num)
+with col1:
+    cells = sorted(df["eutrancellfdd"].dropna().unique())
+    selected_site = st.selectbox("Select CELL", cells)
 
-    x = [num(c) for c in cols]
-    y = pd.to_numeric(row[cols], errors="coerce").values
-    hist = np.diff(np.insert(y, 0, 0))
+with col2:
+    bands = ["All"] + sorted(df["band"].dropna().unique())
+    selected_band = st.selectbox("Select BAND", bands)
 
-    return x, hist, y
+df_f = df[df["eutrancellfdd"] == selected_site]
 
-# ================= CHART =================
+if selected_band != "All":
+    df_f = df_f[df_f["band"] == selected_band]
+
+if df_f.empty:
+    st.warning("No Data")
+    st.stop()
+
+# ================= GROUP =================
+df_g = (
+    df_f.groupby(["sector", "distance_km"], as_index=False)["pmtainit2distr"]
+    .sum()
+    .sort_values("distance_km")
+)
+
+# ================= PLOT =================
 def plot_chart(df_sec, title):
 
     if df_sec.empty:
-        st.markdown('<div class="no-data">No Data</div>', unsafe_allow_html=True)
+        st.warning("No Data")
         return
 
-    row = df_sec.iloc[0]
-    x, hist, cum = build_hist(row)
+    sample = df_sec["pmtainit2distr"]
+    x = df_sec["distance_km"]
+
+    cum = sample.cumsum()
+    cum_pct = cum / cum.max() * 100
 
     fig = go.Figure()
 
-    fig.add_bar(x=x, y=hist, name="Sample", marker_color="#4C78A8")
+    # BAR
+    fig.add_bar(
+        x=x,
+        y=sample,
+        name="Sample",
+        marker_color="#4C78A8"
+    )
 
+    # LINE
     fig.add_scatter(
-        x=x, y=cum,
+        x=x,
+        y=cum_pct,
         mode="lines+markers",
         name="% Cumulative",
         yaxis="y2",
         line=dict(color="green")
     )
 
-    threshold = baseline / 100 * max(cum)
-
+    # BASELINE
+    threshold = 90
     fig.add_hline(y=threshold, line_dash="dash", line_color="red")
 
-    idx = np.argmax(cum >= threshold)
+    # TA90
+    idx = cum_pct.ge(threshold).idxmax()
 
     fig.add_scatter(
-        x=[x[idx]],
-        y=[cum[idx]],
+        x=[x.loc[idx]],
+        y=[cum_pct.loc[idx]],
         mode="markers",
         marker=dict(color="red", size=10, symbol="x"),
-        name="Baseline"
+        name="TA 90%"
     )
 
     fig.update_layout(
-        title=dict(text=title, font=dict(size=12)),
-        height=260,
-        margin=dict(l=5, r=5, t=30, b=5),
-        xaxis_title="Range (Km)",
+        title=title,
+        height=320,
+        xaxis_title="Distance (Km)",
         yaxis_title="Sample",
-        yaxis2=dict(overlaying="y", side="right"),
-        legend=dict(orientation="h", y=-0.3)
+        yaxis2=dict(
+            overlaying="y",
+            side="right",
+            title="% Cumulative"
+        ),
+        legend=dict(orientation="h")
     )
 
     st.plotly_chart(fig, use_container_width=True)
 
 # ================= DASHBOARD =================
-bands = sorted(df["band"].dropna().unique())
+st.markdown("## 📡 Sector View")
 
-for b in bands:
+cols = st.columns(3)
+sectors = ["SEC1", "SEC2", "SEC3"]
 
-    st.markdown(f"## 📶 Band: L{int(b)}")
+for i, sec in enumerate(sectors):
+    with cols[i]:
 
-    col1, col2, col3 = st.columns(3)
+        df_sec = df_g[df_g["sector"] == sec]
 
-    sectors = ["SEC1", "SEC2", "SEC3"]
-
-    for i, sec in enumerate(sectors):
-
-        with [col1, col2, col3][i]:
-
-            st.markdown('<div class="card">', unsafe_allow_html=True)
-
-            df_sec = df[(df["band"] == b) & (df["sector"] == sec)]
-
-            title = sec
-            if not df_sec.empty:
-                title = df_sec.iloc[0]["cell_name"]
-
-            plot_chart(df_sec, title)
-
-            st.markdown('</div>', unsafe_allow_html=True)
+        plot_chart(df_sec, sec)
