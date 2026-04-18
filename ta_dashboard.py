@@ -1,117 +1,122 @@
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
-import re
+import os
 
 st.set_page_config(layout="wide")
+
 st.title("📊 TA Dashboard (Site Based)")
 
-# ================= LOAD =================
+# ================= DEBUG FILE CHECK =================
+st.subheader("🔍 Debug Files")
+
+files = os.listdir()
+st.write("Files in repo:", files)
+
+# ================= LOAD DATA =================
 @st.cache_data
 def load_data():
-    ta = pd.read_csv("ta_stat_20260409.csv")
-    mcom = pd.read_csv("mcom.csv")
+    try:
+        ta = pd.read_csv("ta_stat_20260409.csv")
+        st.success("✅ TA file loaded")
+        st.write("TA shape:", ta.shape)
+        st.write(ta.head())
+    except Exception as e:
+        st.error(f"❌ TA ERROR: {e}")
+        st.stop()
 
-    ta.columns = ta.columns.str.lower()
-    mcom.columns = mcom.columns.str.lower()
-
-    ta["ci"] = ta["ci"].astype(str)
-    mcom["ci"] = mcom["ci"].astype(str)
+    try:
+        mcom = pd.read_csv("mcom.csv")
+        st.success("✅ MCOM file loaded")
+        st.write("MCOM shape:", mcom.shape)
+        st.write(mcom.head())
+    except Exception as e:
+        st.error(f"❌ MCOM ERROR: {e}")
+        st.stop()
 
     return ta, mcom
 
-ta_df, mcom = load_data()
 
-# ================= DETECT PERCENTILE =================
-perc_cols = [c for c in ta_df.columns if "ta_distance" in c]
+ta_df, mcom_df = load_data()
 
-def get_perc(x):
-    return int(re.findall(r'\d+', x)[0])
+# ================= CLEAN COLUMN =================
+ta_df.columns = ta_df.columns.str.lower()
+mcom_df.columns = mcom_df.columns.str.lower()
 
-perc_cols = sorted(perc_cols, key=get_perc)
-x_vals = [get_perc(c) for c in perc_cols]
+# ================= VALIDATION =================
+required_ta = ["ci", "site"]
+required_mcom = ["site_id", "ci", "band"]
 
-# ================= SITE =================
-sites = sorted(mcom["site"].dropna().unique())
-selected_site = st.selectbox("Select Site", sites)
+for col in required_ta:
+    if col not in ta_df.columns:
+        st.error(f"❌ Missing column in TA: {col}")
+        st.stop()
 
-# ================= FILTER =================
-ci_list = mcom[mcom["site"] == selected_site]["ci"].unique()
-df = ta_df[ta_df["ci"].isin(ci_list)]
+for col in required_mcom:
+    if col not in mcom_df.columns:
+        st.error(f"❌ Missing column in MCOM: {col}")
+        st.stop()
 
-if df.empty:
-    st.warning("No TA data")
+st.success("✅ Column validation OK")
+
+# ================= FILTER SITE =================
+site_list = sorted(mcom_df["site_id"].dropna().unique())
+
+selected_site = st.selectbox("Select Site ID", site_list)
+
+site_mcom = mcom_df[mcom_df["site_id"] == selected_site]
+
+if site_mcom.empty:
+    st.warning("No MCOM data for this site")
     st.stop()
 
-# ================= MERGE =================
-df = df.merge(mcom, on="ci", how="left")
+st.write("Selected site data:", site_mcom)
 
-# ================= BAND =================
-df["band_clean"] = df["band"].astype(str)
+# ================= JOIN TA =================
+merged = pd.merge(
+    ta_df,
+    site_mcom,
+    on="ci",
+    how="inner"
+)
 
-# ================= SECTOR =================
-def ci_to_sector(ci):
-    if str(ci).endswith("1"): return "SEC1"
-    if str(ci).endswith("2"): return "SEC2"
-    if str(ci).endswith("3"): return "SEC3"
-    return "UNK"
+if merged.empty:
+    st.warning("❌ No matching TA data after join")
+    st.stop()
 
-df["sector"] = df["ci"].apply(ci_to_sector)
+st.success("✅ Data joined")
 
-# ================= PLOT =================
-def plot_curve(df_sec, title):
+# ================= DETECT PERCENTILE =================
+perc_cols = [c for c in merged.columns if "perc" in c or "ta" in c]
 
-    if df_sec.empty:
-        st.warning("No Data")
-        return
+if len(perc_cols) == 0:
+    st.error("❌ No percentile columns found")
+    st.stop()
 
-    row = df_sec.iloc[0]
+st.write("Detected columns:", perc_cols)
 
-    # 🔥 CLEAN DATA NUMERIC
-    y = pd.to_numeric(row[perc_cols], errors="coerce")
-    
-    # drop nan
-    valid = ~y.isna()
-    x = [x_vals[i] for i in range(len(x_vals)) if valid[i]]
-    y = y[valid]
-
-    if len(y) == 0:
-        st.warning("No valid TA data")
-        return
-
-    fig = go.Figure()
-
-    fig.add_scatter(
-        x=x,
-        y=y,
-        mode="lines+markers"
-    )
-
-    fig.update_layout(
-        title=title,
-        xaxis_title="Percentile",
-        yaxis_title="TA Distance (Km)",
-        height=300
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
-
-# ================= LOOP =================
-bands = sorted(df["band_clean"].dropna().unique())
-sectors = ["SEC1","SEC2","SEC3"]
+# ================= GROUP BY BAND =================
+bands = sorted(merged["band"].dropna().unique())
 
 for band in bands:
+    st.subheader(f"📡 Band L{int(band)}")
 
-    st.markdown(f"## 📡 Band L{band}")
+    band_df = merged[merged["band"] == band]
+
+    if band_df.empty:
+        st.warning("No data for this band")
+        continue
 
     cols = st.columns(3)
 
-    for i, sec in enumerate(sectors):
-        with cols[i]:
+    for i, (_, row) in enumerate(band_df.iterrows()):
+        with cols[i % 3]:
 
-            df_sec = df[
-                (df["band_clean"] == band) &
-                (df["sector"] == sec)
-            ]
+            st.markdown(f"**CI {row['ci']}**")
 
-            plot_curve(df_sec, sec)
+            try:
+                chart_data = row[perc_cols]
+
+                st.line_chart(chart_data)
+
+            except Exception as e:
+                st.error(f"Chart error: {e}")
