@@ -2,11 +2,15 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
-import os
 import re
 
 st.set_page_config(layout="wide")
-st.title("📊 TA Dashboard (NDO Style)")
+
+# ================= HEADER =================
+st.markdown("""
+# 📊 NDO TA & MDT DASHBOARD
+### TA 4G CELL
+""")
 
 # ================= LOAD =================
 @st.cache_data
@@ -24,116 +28,136 @@ def load_data():
 
 ta_df, mcom_df = load_data()
 
-# ================= FILTER SITE =================
-site_list = sorted(mcom_df["site_id"].dropna().unique())
-selected_site = st.selectbox("Select Site ID", site_list)
+# ================= FILTER =================
+col1, col2, col3 = st.columns(3)
 
+with col1:
+    site_list = sorted(mcom_df["site_id"].dropna().unique())
+    selected_site = st.selectbox("Select SITE", site_list)
+
+with col2:
+    band_list = ["All"] + sorted(mcom_df["band"].dropna().astype(int).unique().tolist())
+    selected_band = st.selectbox("Select BAND", band_list)
+
+with col3:
+    baseline = st.slider("Baseline (%)", 80, 100, 90)
+
+# ================= JOIN =================
 site_mcom = mcom_df[mcom_df["site_id"] == selected_site]
+
+if selected_band != "All":
+    site_mcom = site_mcom[site_mcom["band"] == selected_band]
+
 ci_list = site_mcom["ci"].unique()
 
 df = ta_df[ta_df["ci"].isin(ci_list)]
 df = df.merge(site_mcom, on="ci", how="left")
 
 # ================= SECTOR =================
-def ci_to_sector(ci):
-    ci = str(ci)
+def get_sector(ci):
     if ci.endswith("1"): return "SEC1"
     if ci.endswith("2"): return "SEC2"
     if ci.endswith("3"): return "SEC3"
     return "UNK"
 
-df["sector"] = df["ci"].apply(ci_to_sector)
+df["sector"] = df["ci"].apply(get_sector)
 
-# ================= HISTOGRAM SIMULATION =================
-def build_histogram(row):
+# ================= HIST =================
+def build_hist(row):
 
     perc_cols = [c for c in row.index if "_ta_distance_km" in c]
 
-    def get_perc(x):
+    def get_num(x):
         return int(re.findall(r'\d+', x)[0])
 
-    perc_cols = sorted(perc_cols, key=get_perc)
+    perc_cols = sorted(perc_cols, key=get_num)
 
-    x = [get_perc(c) for c in perc_cols]
+    x = [get_num(c) for c in perc_cols]
     y = pd.to_numeric(row[perc_cols], errors="coerce").values
 
-    # simulate histogram dari percentile
     hist = np.diff(np.insert(y, 0, 0))
 
     return x, hist, y
 
 # ================= PLOT =================
-def plot_ta(df_sec, title):
+def plot_chart(df_sec, title):
 
     if df_sec.empty:
         st.warning("No Data")
         return
 
     row = df_sec.iloc[0]
-
-    x, hist, cum = build_histogram(row)
+    x, hist, cum = build_hist(row)
 
     fig = go.Figure()
 
-    # 🔵 BAR (Sample)
+    # BAR
     fig.add_bar(
         x=x,
         y=hist,
-        name="Sample"
+        name="Sample",
+        marker_color="#4C78A8"
     )
 
-    # 🟢 CUMULATIVE
+    # LINE
     fig.add_scatter(
         x=x,
         y=cum,
         mode="lines+markers",
         name="% Cumulative",
-        yaxis="y2"
+        yaxis="y2",
+        line=dict(color="green")
     )
 
-    # 🔴 90% LINE
+    # BASELINE
+    threshold = baseline / 100 * max(cum)
+
     fig.add_hline(
-        y=0.9 * max(cum),
+        y=threshold,
         line_dash="dash",
         line_color="red"
     )
 
-    # ❌ MARKER X
-    idx_90 = np.argmax(cum >= 0.9 * max(cum))
+    # MARKER X
+    idx = np.argmax(cum >= threshold)
+
     fig.add_scatter(
-        x=[x[idx_90]],
-        y=[cum[idx_90]],
+        x=[x[idx]],
+        y=[cum[idx]],
         mode="markers",
         marker=dict(color="red", size=10, symbol="x"),
-        name="90%"
+        name="Baseline"
     )
 
     fig.update_layout(
         title=title,
+        height=280,
+        margin=dict(l=10, r=10, t=30, b=10),
         xaxis_title="Range (Km)",
-        yaxis=dict(title="Sample"),
+        yaxis_title="Sample",
         yaxis2=dict(
-            title="% Cumulative",
             overlaying="y",
-            side="right"
+            side="right",
+            title="% Cumulative"
         ),
-        height=300,
         legend=dict(orientation="h")
     )
 
     st.plotly_chart(fig, use_container_width=True)
 
-# ================= LOOP =================
+# ================= DASHBOARD =================
 bands = sorted(df["band"].dropna().unique())
-sectors = ["SEC1","SEC2","SEC3"]
 
 for band in bands:
 
-    st.markdown(f"## 📡 Band L{int(band)}")
+    st.markdown(f"## 📶 Band: L{int(band)}")
 
     cols = st.columns(3)
 
+    sectors = ["SEC1", "SEC2", "SEC3"]
+
     for i, sec in enumerate(sectors):
+
         with cols[i]:
 
             df_sec = df[
@@ -141,4 +165,9 @@ for band in bands:
                 (df["sector"] == sec)
             ]
 
-            plot_ta(df_sec, sec)
+            title = sec
+
+            if not df_sec.empty:
+                title = df_sec.iloc[0]["cell_name"]
+
+            plot_chart(df_sec, title)
