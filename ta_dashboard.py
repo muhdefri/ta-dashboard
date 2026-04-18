@@ -12,19 +12,56 @@ def load_data():
     ta = pd.read_csv("ta_stat_20260409.csv")
     mcom = pd.read_csv("mcom.csv")
 
-    # normalize key
+    # normalize column names
+    ta.columns = ta.columns.str.lower()
+    mcom.columns = mcom.columns.str.lower()
+
+    # ensure key columns exist
+    if "ci" not in ta.columns:
+        st.error("❌ 'ci' column not found in TA file")
+        st.stop()
+
+    if "ci" not in mcom.columns:
+        st.error("❌ 'ci' column not found in MCOM file")
+        st.stop()
+
+    # normalize values
     ta["ci"] = ta["ci"].astype(str).str.strip()
     mcom["ci"] = mcom["ci"].astype(str).str.strip()
 
-    # normalize site
-    mcom["site"] = mcom["site"].astype(str).str.upper().str.strip()
+    # detect site column
+    site_col = None
+    for col in ["site", "site_id", "enodeb"]:
+        if col in mcom.columns:
+            site_col = col
+            break
 
-    return ta, mcom
+    if site_col is None:
+        st.error("❌ No site column found in MCOM (site/site_id/enodeb)")
+        st.stop()
 
-ta_df, mcom = load_data()
+    # detect band column
+    band_col = None
+    for col in ["band", "lte_band", "freq"]:
+        if col in mcom.columns:
+            band_col = col
+            break
+
+    if band_col is None:
+        st.error("❌ No band column found in MCOM")
+        st.stop()
+
+    return ta, mcom, site_col, band_col
+
+
+ta_df, mcom, site_col, band_col = load_data()
 
 # ================= TA BUCKET =================
 ta_cols = [c for c in ta_df.columns if c.startswith("ta")]
+
+if len(ta_cols) == 0:
+    st.error("❌ No TA bucket columns found (ta0_xxx, ta1_xxx, etc)")
+    st.stop()
 
 def extract_km(col):
     if "gt" in col:
@@ -46,6 +83,36 @@ def ci_to_sector(ci):
     elif ci.endswith("3"):
         return "SEC3"
     return "UNK"
+
+# ================= UI =================
+sites = sorted(mcom[site_col].dropna().unique())
+
+selected_site = st.selectbox("Select Site", sites)
+
+st.markdown(f"### 📡 Site: {selected_site}")
+
+# ================= FILTER =================
+ci_list = mcom[mcom[site_col] == selected_site]["ci"].unique()
+
+df = ta_df[ta_df["ci"].isin(ci_list)]
+
+# ================= JOIN =================
+df = df.merge(mcom, on="ci", how="left")
+
+# ================= BAND =================
+df["band_clean"] = (
+    df[band_col]
+    .astype(str)
+    .str.extract(r'(\d{3,4})')
+)
+
+df["band_clean"] = df["band_clean"].replace({
+    "1850": "1800",
+    "1840": "1800"
+})
+
+# ================= SECTOR =================
+df["sector"] = df["ci"].apply(ci_to_sector)
 
 # ================= PLOT =================
 def plot_ta_chart(df_sec, title):
@@ -70,32 +137,19 @@ def plot_ta_chart(df_sec, title):
 
     fig = go.Figure()
 
-    # histogram
-    fig.add_bar(
-        x=x_vals,
-        y=y,
-        name="Sample",
-        marker_color="steelblue"
-    )
+    fig.add_bar(x=x_vals, y=y, name="Sample")
 
-    # cumulative
     fig.add_scatter(
         x=x_vals,
         y=cum_pct,
-        name="% Cumulative",
         yaxis="y2",
         mode="lines+markers",
+        name="% Cumulative",
         line=dict(color="green")
     )
 
-    # baseline 90%
-    fig.add_hline(
-        y=90,
-        line_dash="dash",
-        line_color="red"
-    )
+    fig.add_hline(y=90, line_dash="dash", line_color="red")
 
-    # marker 90%
     if pd.notna(ta90):
         fig.add_scatter(
             x=[ta90],
@@ -115,47 +169,18 @@ def plot_ta_chart(df_sec, title):
             side="right",
             range=[0,110]
         ),
-        height=300,
-        margin=dict(l=20, r=20, t=40, b=20)
+        height=300
     )
 
     st.plotly_chart(fig, use_container_width=True)
 
-# ================= UI =================
-selected_site = st.selectbox(
-    "Select Site ID",
-    sorted(mcom["site"].dropna().unique())
-)
-
-st.markdown(f"### 📡 Site: {selected_site}")
-
-# ================= FILTER =================
-ci_list = mcom[mcom["site"] == selected_site]["ci"].unique()
-
-df = ta_df[ta_df["ci"].isin(ci_list)]
-
-# ================= JOIN =================
-df = df.merge(mcom, on="ci", how="left")
-
-# ================= BAND CLEAN =================
-df["Band"] = (
-    df["band"]
-    .astype(str)
-    .str.extract(r'(\d{3,4})')
-)
-
-# normalisasi band aneh (optional)
-df["Band"] = df["Band"].replace({
-    "1850": "1800",
-    "1840": "1800"
-})
-
-# ================= SECTOR =================
-df["SECTOR_GROUP"] = df["ci"].apply(ci_to_sector)
-
 # ================= LOOP =================
-bands = sorted(df["Band"].dropna().unique())
+bands = sorted(df["band_clean"].dropna().unique())
 sectors = ["SEC1","SEC2","SEC3"]
+
+if len(bands) == 0:
+    st.warning("No Band Data Found")
+    st.stop()
 
 for band in bands:
 
@@ -167,8 +192,8 @@ for band in bands:
         with cols[i]:
 
             df_sec = df[
-                (df["Band"] == band) &
-                (df["SECTOR_GROUP"] == sec)
+                (df["band_clean"] == band) &
+                (df["sector"] == sec)
             ]
 
-            plot_ta_chart(df_sec, f"{sec}")
+            plot_ta_chart(df_sec, sec)
