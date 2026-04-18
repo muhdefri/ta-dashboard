@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 import re
 
 st.set_page_config(layout="wide")
-st.title("📊 TA Dashboard (CI Based)")
+st.title("📊 TA Dashboard (Site Based)")
 
 # ================= LOAD DATA =================
 @st.cache_data
@@ -12,20 +12,23 @@ def load_data():
     ta = pd.read_csv("ta_stat_20260409.csv")
     mcom = pd.read_csv("mcom.csv")
 
+    # normalize key
     ta["ci"] = ta["ci"].astype(str).str.strip()
     mcom["ci"] = mcom["ci"].astype(str).str.strip()
 
-    return ta, mcom
+    # normalize site
+    mcom["site"] = mcom["site"].astype(str).str.upper().str.strip()
 
+    return ta, mcom
 
 ta_df, mcom = load_data()
 
-# ================= EXTRACT TA BUCKET =================
+# ================= TA BUCKET =================
 ta_cols = [c for c in ta_df.columns if c.startswith("ta")]
 
 def extract_km(col):
     if "gt" in col:
-        return 7  # fallback max
+        return 7
     match = re.search(r'_(\d+)', col)
     if match:
         return int(match.group(1)) / 1000
@@ -33,8 +36,7 @@ def extract_km(col):
 
 x_vals = [extract_km(c) for c in ta_cols]
 
-
-# ================= CI TO SECTOR =================
+# ================= SECTOR =================
 def ci_to_sector(ci):
     ci = str(ci)
     if ci.endswith("1"):
@@ -45,15 +47,13 @@ def ci_to_sector(ci):
         return "SEC3"
     return "UNK"
 
-
-# ================= PLOT FUNCTION =================
+# ================= PLOT =================
 def plot_ta_chart(df_sec, title):
 
     if df_sec.empty:
         st.warning("No Data")
         return
 
-    # ambil 1 row (1 cell)
     row = df_sec.iloc[0]
 
     y = row[ta_cols].values
@@ -95,14 +95,14 @@ def plot_ta_chart(df_sec, title):
         line_color="red"
     )
 
-    # marker X
+    # marker 90%
     if pd.notna(ta90):
         fig.add_scatter(
             x=[ta90],
             y=[90],
             mode="markers",
             marker=dict(color="red", size=10, symbol="x"),
-            name="90%"
+            name="TA 90%"
         )
 
     fig.update_layout(
@@ -121,33 +121,39 @@ def plot_ta_chart(df_sec, title):
 
     st.plotly_chart(fig, use_container_width=True)
 
-
 # ================= UI =================
-selected_ci = st.multiselect(
-    "Select CI",
-    sorted(ta_df["ci"].unique())
+selected_site = st.selectbox(
+    "Select Site ID",
+    sorted(mcom["site"].dropna().unique())
 )
 
-if not selected_ci:
-    st.stop()
+st.markdown(f"### 📡 Site: {selected_site}")
 
 # ================= FILTER =================
-df = ta_df[ta_df["ci"].isin(selected_ci)]
+ci_list = mcom[mcom["site"] == selected_site]["ci"].unique()
 
-# ================= JOIN MCOM =================
+df = ta_df[ta_df["ci"].isin(ci_list)]
+
+# ================= JOIN =================
 df = df.merge(mcom, on="ci", how="left")
 
 # ================= BAND CLEAN =================
 df["Band"] = (
     df["band"]
     .astype(str)
-    .str.extract(r'(\d+)')
+    .str.extract(r'(\d{3,4})')
 )
+
+# normalisasi band aneh (optional)
+df["Band"] = df["Band"].replace({
+    "1850": "1800",
+    "1840": "1800"
+})
 
 # ================= SECTOR =================
 df["SECTOR_GROUP"] = df["ci"].apply(ci_to_sector)
 
-# ================= LOOP BAND =================
+# ================= LOOP =================
 bands = sorted(df["Band"].dropna().unique())
 sectors = ["SEC1","SEC2","SEC3"]
 
